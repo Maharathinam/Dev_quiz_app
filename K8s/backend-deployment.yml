@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quiz-backend
+  labels:
+    app: quiz-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: quiz-backend
+  template:
+    metadata:
+      labels:
+        app: quiz-backend
+    spec:
+      containers:
+        - name: quiz-backend
+          image: YOUR_ECR_URI/quiz-backend:latest
+          ports:
+            - containerPort: 5000
+          env:
+            - name: PORT
+              value: "5000"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "250m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quiz-backend-service
+spec:
+  selector:
+    app: quiz-backend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 5000
+  type: ClusterIP

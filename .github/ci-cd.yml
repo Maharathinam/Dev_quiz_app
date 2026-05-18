@@ -1,0 +1,126 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.ap-south-1.amazonaws.com
+  EKS_CLUSTER_NAME: dev-quiz-cluster
+
+jobs:
+  # ─── JOB 1: Test ──────────────────────────────────────────────
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run backend tests
+        working-directory: backend
+        run: npm test
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
+  # ─── JOB 2: Build & Push Docker Images ──────────────────────
+  build-and-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate image tag
+        id: meta
+        run: echo "tag=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      - name: Build & push backend image
+        run: |
+          docker build -t $ECR_REGISTRY/quiz-backend:${{ steps.meta.outputs.tag }} ./backend
+          docker push $ECR_REGISTRY/quiz-backend:${{ steps.meta.outputs.tag }}
+
+      - name: Build & push frontend image
+        run: |
+          docker build \
+            --build-arg REACT_APP_API_URL=${{ secrets.BACKEND_URL }} \
+            -t $ECR_REGISTRY/quiz-frontend:${{ steps.meta.outputs.tag }} \
+            ./frontend
+          docker push $ECR_REGISTRY/quiz-frontend:${{ steps.meta.outputs.tag }}
+
+  # ─── JOB 3: Deploy to EKS ────────────────────────────────────
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region $AWS_REGION \
+            --name $EKS_CLUSTER_NAME
+
+      - name: Deploy backend to EKS
+        run: |
+          IMAGE=$ECR_REGISTRY/quiz-backend:${{ needs.build-and-push.outputs.image-tag }}
+          kubectl set image deployment/quiz-backend quiz-backend=$IMAGE
+          kubectl rollout status deployment/quiz-backend --timeout=120s
+
+      - name: Deploy frontend to EKS
+        run: |
+          IMAGE=$ECR_REGISTRY/quiz-frontend:${{ needs.build-and-push.outputs.image-tag }}
+          kubectl set image deployment/quiz-frontend quiz-frontend=$IMAGE
+          kubectl rollout status deployment/quiz-frontend --timeout=120s
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods
+          kubectl get services
