@@ -3,17 +3,22 @@ version: 0.2
 phases:
   pre_build:
     commands:
+      - echo Logging in to Amazon ECR...
       - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 479925391132.dkr.ecr.us-east-1.amazonaws.com
       - aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
 
   build:
     commands:
+      - echo Building Docker image...
       - docker build -t my-app-frontend:latest -f frontend/Dockerfile frontend/
 
   post_build:
     commands:
+      - echo Tagging image...
       - docker tag my-app-frontend:latest 479925391132.dkr.ecr.us-east-1.amazonaws.com/my-app-frontend:latest
+      - echo Pushing image to ECR...
       - docker push 479925391132.dkr.ecr.us-east-1.amazonaws.com/my-app-frontend:latest
+      - echo Writing imagedefinitions.json...
       - printf '[{"name":"frontend-container","imageUri":"%s"}]' 479925391132.dkr.ecr.us-east-1.amazonaws.com/my-app-frontend:latest > imagedefinitions.json
 
 artifacts:
